@@ -7,6 +7,11 @@ import gc
 import numpy as np
 from PIL import Image
 
+# Reduce tokenizer thread usage and disable torch compile to lower memory/CPU overhead
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
+os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+
 from diffusers import (
     AutoPipelineForImage2Image,
     AutoPipelineForText2Image,
@@ -14,34 +19,42 @@ from diffusers import (
     FluxPipeline
 )
 
-from diffusers.quantizers import PipelineQuantizationConfig
-
 # --- Configuration & Constants ---
 MODELS = {
     'sdxl': 'stabilityai/stable-diffusion-xl-base-1.0',
-    # UPDATED: Replaced sd2 with sd3
     'sd3': 'stabilityai/stable-diffusion-3-medium-diffusers', 
     'sd35': 'stabilityai/stable-diffusion-3.5-medium',
     'flux': 'black-forest-labs/FLUX.1-dev',
     'sd15': 'runwayml/stable-diffusion-v1-5'
 }
 
+# Lazy quantization config to avoid importing bitsandbytes unless needed
 QUANTIZATION_LEVELS = {
-    'fp16': None,
-    'fp8': PipelineQuantizationConfig(
-        quant_backend="bitsandbytes_8bit",
-        quant_kwargs={"load_in_8bit": True},
-        components_to_quantize=["text_encoder_3", "transformer"]
-    ),
-    'fp4': PipelineQuantizationConfig(
-        quant_backend="bitsandbytes_4bit",
-        quant_kwargs={
-            "load_in_4bit": True,
-            "bnb_4bit_quant_type": "nf4",
-            "bnb_4bit_compute_dtype": torch.bfloat16
-        }
-    )
+    'fp16': 'fp16',
+    'fp8': 'fp8',
+    'fp4': 'fp4'
 }
+
+def get_quantization_config(level: str):
+    if level == 'fp16':
+        return None
+    from diffusers.quantizers import PipelineQuantizationConfig  # local import
+    if level == 'fp8':
+        return PipelineQuantizationConfig(
+            quant_backend="bitsandbytes_8bit",
+            quant_kwargs={"load_in_8bit": True},
+            components_to_quantize=["text_encoder_3", "transformer"]
+        )
+    if level == 'fp4':
+        return PipelineQuantizationConfig(
+            quant_backend="bitsandbytes_4bit",
+            quant_kwargs={
+                "load_in_4bit": True,
+                "bnb_4bit_quant_type": "nf4",
+                "bnb_4bit_compute_dtype": torch.bfloat16
+            }
+        )
+    raise ValueError(f"Unsupported quantization level: {level}")
 
 def flush():
     gc.collect()
@@ -54,37 +67,45 @@ class ImageGenerator:
     def __init__(self, model_key, quantization, device=None):
         self.model_key = model_key
         self.quantization = quantization
-        
+
         if device is None:
-            if torch.cuda.is_available():
+            # Prefer CPU on low VRAM GPUs to prevent OOM
+            use_cuda = False
+            try:
+                if torch.cuda.is_available():
+                    props = torch.cuda.get_device_properties(0)
+                    # If VRAM < 4GB, default to CPU for sd3.5 models
+                    use_cuda = props.total_memory >= (4 * 1024**3)
+            except Exception:
+                use_cuda = False
+
+            if use_cuda:
                 self.device = 'cuda'
-            elif torch.backends.mps.is_available():
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
                 self.device = 'mps'
             else:
                 self.device = 'cpu'
         else:
             self.device = device
-            
+
         print(f"Using device: {self.device}")
 
         self.pipeline = None
         self.pipeline_t2i = None
-        
+
         self.load_pipeline()
 
     def load_pipeline(self):
         print(f"Loading {self.model_key} with {self.quantization} quantization...")
         
         model_id = MODELS[self.model_key]
-        q_config = QUANTIZATION_LEVELS[self.quantization]
+        q_level = QUANTIZATION_LEVELS[self.quantization]
+        q_config = get_quantization_config(q_level)
         
         # Determine Dtype
         torch_dtype = None
         if self.quantization == 'fp16':
-            if self.device == 'cpu':
-                torch_dtype = torch.float32 
-            else:
-                torch_dtype = torch.float16
+            torch_dtype = torch.float16 if self.device != 'cpu' else torch.float32
         else:
             torch_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         
@@ -109,18 +130,17 @@ class ImageGenerator:
             elif self.model_key in ['sd35', 'sd3']:
                  if self.quantization == 'fp16':
                     self.pipeline_t2i = StableDiffusion3Pipeline.from_pretrained(
-                        model_id, torch_dtype=torch.float16
+                        model_id, torch_dtype=torch_dtype, low_cpu_mem_usage=True
                     )
-                    self.pipeline_t2i.enable_model_cpu_offload()
+                    self.pipeline_t2i = self.pipeline_t2i.to(self.device)
+                    self.pipeline_t2i.enable_attention_slicing()
                  else:
-                    # Specific logic: If user selected sd35 quantized, upgrade to Large model (optional logic from before)
-                    # For normal sd3, we keep the model_id as is.
                     model_id_load = "stabilityai/stable-diffusion-3.5-large" if (self.model_key == 'sd35' and self.quantization != 'fp16') else model_id
                     
                     self.pipeline_t2i = AutoPipelineForText2Image.from_pretrained(
-                        model_id_load, quantization_config=q_config, torch_dtype=torch.float16
+                        model_id_load, quantization_config=q_config, torch_dtype=torch.float16, low_cpu_mem_usage=True
                     )
-                    self.pipeline_t2i.enable_model_cpu_offload()
+                    self.pipeline_t2i.enable_attention_slicing()
             
 
 
@@ -172,9 +192,6 @@ class ImageGenerator:
                 if self.model_key == 'flux':
                      return self.pipeline(**kwargs).images[0]
                 raise ValueError("Text-to-Image not supported for this model configuration")
-
-        return self.pipeline(**kwargs).images[0]
-
 def main():
     parser = argparse.ArgumentParser(description="Generate images using various Stable Diffusion models.")
     parser.add_argument("--mode", type=str, choices=['img2img', 'txt2img'], required=True, help="Generation mode.")
@@ -205,7 +222,6 @@ def main():
             try:
                 generator = ImageGenerator(model_key, quant, device=args.device)
                 
-
                 print(f"Generating txt2img with {model_key} ({quant})...")
                 
                 i = 0 
@@ -224,9 +240,10 @@ def main():
                 print(f"Saved {out_name}")
                 
                 flush()
-                            
+                
                 del generator
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                 flush()
                 
             except Exception as e:

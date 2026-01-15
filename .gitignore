@@ -205,3 +205,15 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+# Secrets and credentials
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+.aws/
+.azure/
+secrets.json
+credentials.json
+config.ini
+*.conf

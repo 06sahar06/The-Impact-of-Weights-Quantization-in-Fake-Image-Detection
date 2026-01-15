@@ -86,8 +86,8 @@ This mode generates images directly from text prompts.
 ```bash
 python txt2img.py \
   --mode txt2img \
-  --prompt "A high-resolution portrait photograph, realistic lighting" \
-  --models sdxl sd35 flux \
+  --prompt "A futuristic cyberpunk city with neon lights" \
+  --models sdxl sd35 flux sd3 sd15 \
   --quantization fp16 fp8 fp4 \
   --steps 60 \
   --seed 123 \
@@ -111,7 +111,7 @@ dataset/real/
 ```bash
 python img2img.py \
   --input_dir dataset/real \
-  --prompt "A high-resolution portrait photograph, realistic lighting" \
+  --prompt "oil painting, van gogh style, thick brushstrokes" \
   --models sd15 sd3 sd35 \
   --quantization fp16 fp8 fp4 \
   --strength 0.6 \
