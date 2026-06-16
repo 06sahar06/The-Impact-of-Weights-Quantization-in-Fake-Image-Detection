@@ -2,10 +2,8 @@
 
 ## Overview
 
-This project investigates the impact of **weight quantization** in diffusion-based image generators on the performance of **state-of-the-art fake image detectors**.
-
-Specifically, we study how different quantization levels — **FP16, FP8, and FP4** — applied to modern diffusion models affect the ability of detectors to correctly identify AI-generated images.
-
+This project investigates the impact of **weight quantization** in diffusion-based image generators on the performance of state-of-the-art fake image detectors
+Diffusion models can run on a vaster range of hardware by reducing model precision to lower levels. Specifically, we study how different quantization levels ** FP16, FP8, and FP4 ** affect the ability of detectors to correctly identify AI-generated images.
 The goal is to understand the **trade-off between computational efficiency and detectability**, and to analyze whether aggressive quantization alters the visual or statistical artifacts exploited by fake image detectors.
 
 ---
@@ -29,8 +27,7 @@ The goal is to understand the **trade-off between computational efficiency and d
 
 - **Evaluation**
   - Performance of state-of-the-art fake image detectors
-  - Accuracy, Precision, Recall, F1-score, ROC-AUC
-  - Efficiency considerations (memory usage, inference time)
+  - TPR, TNR, AUC, BalAcc
 
 ---
 
@@ -127,6 +124,9 @@ Detectors are sourced from:
 
 🔗 Image Deepfake Detectors Public Library
 https://github.com/truebees-ai/Image-Deepfake-Detectors-Public-Library
+
+Chosen detectors: CLIP-D, NPR, R50_nodown
+
 
 #### Labels
 0 → Real image
